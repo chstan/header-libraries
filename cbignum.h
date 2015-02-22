@@ -91,6 +91,7 @@ void bn_set(Bignum *bn, long long n) {
         bn->_length += 1;
     }
     bn->_length--;
+    if (bn->_length == 0) bn->_length++;
 }
 
 void bn_negate(Bignum *bn) {

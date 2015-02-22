@@ -111,7 +111,7 @@ void m_set_value_at_elem(Map *m, void *elem, void *data) {
     memcpy(m_value_from_elem(m, elem), data, m->_stride);
 }
 
-void *m_create_elem(Map *m, void *n_elem, char *k, void *data) {
+void *m_create_elem(Map *m, void *n_elem, const char *k, void *data) {
     void *elem = malloc(sizeof(char *) + (strlen(k) + 1)*sizeof(char)
                         + m->_stride);
     assert(elem != NULL);
@@ -185,7 +185,7 @@ void m_remove(Map *m, const char *k) {
     }
 }
 
-void m_insert_unsafe(Map *m, char *k, void *data) {
+void m_insert_unsafe(Map *m, const char *k, void *data) {
     m_ensure_space(m);
 
     size_t b_idx = m_default_hash(k, m->_bucket_count);
@@ -195,7 +195,7 @@ void m_insert_unsafe(Map *m, char *k, void *data) {
     m->_length++;
 }
 
-void m_insert(Map *m, char *k, void *data) {
+void m_insert(Map *m, const char *k, void *data) {
     void *elem = m_match(m, k);
     if (elem == NULL) {
         m_insert_unsafe(m, k, data);

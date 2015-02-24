@@ -91,7 +91,7 @@ void lexer_add_rule(LexerEnv *le, const char *category_label, const char *rule_p
     assert(tc != NULL);
     rule._category = tc;
 
-    int comp_code = regcomp(&rule._regex, rule_pattern, REG_EXTENDED);
+    int comp_code = regcomp(&rule._regex, rule_pattern, REG_EXTENDED | REG_NEWLINE);
     if (comp_code != 0) {
         size_t error_buffer_size = 512;
         char *error_buffer = (char *) malloc(error_buffer_size + 1);
@@ -105,23 +105,26 @@ void lexer_add_rule(LexerEnv *le, const char *category_label, const char *rule_p
     v_push_back(le->_rules, &rule);
 }
 
-const char *lexer_rule_accepts(LexerRule *rule, const char *input) {
-    regmatch_t matches[1];
+const char *lexer_rule_accepts(LexerRule *rule, const char *input, regmatch_t *matches) {
+    if (regexec(&rule->_regex, input, 0, NULL, 0) == REG_NOMATCH) {
+        return NULL;
+    }
     int result = regexec(&rule->_regex, input, 1, matches, 0);
     if (result == REG_NOMATCH) {
         return NULL;
     }
 
-    assert(matches[0].rm_so != -1);
-    if (matches[0].rm_so != 0)
+    if (matches[0].rm_so != 0) {
         return NULL;
+    }
+    assert(matches[0].rm_so == 0);
     return input + matches[0].rm_eo;
 }
 
-const char *lexer_read_token(LexerEnv *le, const char *input, Token *t) {
+const char *lexer_read_token(LexerEnv *le, const char *input, Token *t, regmatch_t *matches) {
     for (size_t rule_idx = 0; rule_idx < v_size(le->_rules); rule_idx++) {
         LexerRule *rule = (LexerRule *) v_at(le->_rules, rule_idx);
-        const char *next = lexer_rule_accepts(rule, input);
+        const char *next = lexer_rule_accepts(rule, input, matches);
         if (next != NULL) {
             t->_category = rule->_category;
             size_t l = next - input;
@@ -136,13 +139,14 @@ const char *lexer_read_token(LexerEnv *le, const char *input, Token *t) {
 
 Vector *lexer_lex(LexerEnv *le, const char *input) {
     le->_rules_initialized = true;
+    regmatch_t matches[1];
 
     Vector *tokens = v_make(sizeof(Token));
     tokens->_cleanup_fn = token_cleanup_fn;
 
     Token t;
     while(input[0] != '\0') {
-        input = lexer_read_token(le, input, &t);
+        input = lexer_read_token(le, input, &t, matches);
         if (input == NULL) {
             // could not lex further
             v_map(tokens, print_token, NULL);

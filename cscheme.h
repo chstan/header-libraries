@@ -65,7 +65,7 @@ typedef struct SchemeObject {
         } _primitive_procedure;
         struct {
             struct SchemeObject *_body;
-            struct SchemeObject *_env;
+            Vector *_env;
             Vector *_req_args;
             Vector *_opt_args;
             struct SchemeObject *_rest;
@@ -812,6 +812,35 @@ void scheme_lambda_compile_parameters(SchemeObject *proc,
     }
 }
 
+void compile_closing_env(char *k, void *d, void *aux) {
+    Vector *to = (Vector *) aux;
+    SchemeObject *record = (SchemeObject *) malloc(sizeof(SchemeObject));
+    record->_type = SCHEME_PAIR;
+    SchemeObject *symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    symbol->_type = SCHEME_SYMBOL;
+    symbol->_data._symbol._value = strdup(k);
+    set_car(record, symbol);
+    set_cdr(record, *((SchemeObject **) d));
+    v_push_back(to, &record);
+}
+
+Vector *scheme_build_closing_environment(SchemeEnv *se) {
+    Vector *compiled_closing_env = v_make(sizeof(SchemeObject *));
+    Map *uncompiled_closing_env = m_make(sizeof(SchemeObject *));
+
+    // generate unique most specific closing environment
+    for (size_t idx = 0; idx < v_size(se->_lexical_environment_stack); idx++) {
+        Map *lenv = *(Map **) v_at(se->_lexical_environment_stack, idx);
+        m_map(lenv, map_union, uncompiled_closing_env);
+    }
+
+    // compile to vector
+    m_map(uncompiled_closing_env, compile_closing_env, compiled_closing_env);
+
+    m_free(uncompiled_closing_env);
+    return compiled_closing_env;
+}
+
 SchemeObject *scheme_lambda_special_form(SchemeEnv *se,
                                          SchemeObject *args) {
     size_t n_args = scheme_length(args);
@@ -823,7 +852,7 @@ SchemeObject *scheme_lambda_special_form(SchemeEnv *se,
     scheme_lambda_compile_parameters(new_proc, car(args));
     new_proc->_data._compound_procedure._body = cdr(args);
     new_proc->_data._compound_procedure._n_args_expected = 0;
-    new_proc->_data._compound_procedure._env = NULL; // for now
+    new_proc->_data._compound_procedure._env = scheme_build_closing_environment(se);
     new_proc->_data._compound_procedure._proc_name =
         scheme_generate_lambda_name(se);
     return new_proc;
@@ -941,7 +970,7 @@ SchemeEnv *scheme_env_make(const char *stdlib_location) {
     lexer_add_rule(se->_lexer, "UNQUOTE", "^,");
     lexer_add_rule(se->_lexer, "AT", "^@");
     lexer_add_rule(se->_lexer, "IDENTIFIER",
-                   "^[a-zA-Z!\\$%&\\*/:<=>\\?~_\\^]"
+                   "^[a-zA-Z!#\\$%&\\*/:<=>\\?~_\\^]"
                    "[a-zA-Z!\\$%&\\*/:<=>\\?~_\\^0-9\\.\\+-]*");
 
     se->_parser = parser_env_make();
@@ -1542,6 +1571,13 @@ void scheme_add_to_lexical_environment(Map *lenv, SchemeObject *pattern,
     }
 }
 
+void scheme_add_closing_env(void *d, void *aux) {
+    Map *to = (Map *) aux;
+    SchemeObject *record = *((SchemeObject **) d);
+    SchemeObject *reffed = cdr(record);
+    m_insert(to, car(record)->_data._symbol._value, &reffed);
+}
+
 Map *scheme_build_lambda_lexical_environment(SchemeObject *proc,
                                              SchemeObject *unbound_args) {
     size_t n_unbound_args = scheme_length(unbound_args);
@@ -1556,6 +1592,8 @@ Map *scheme_build_lambda_lexical_environment(SchemeObject *proc,
     }
 
     Map *lenv = m_make(sizeof(SchemeObject *));
+    v_map(proc->_data._compound_procedure._env, scheme_add_closing_env, lenv);
+
     for (size_t v_idx = 0; v_idx < v_size(req_args); v_idx++) {
         scheme_add_to_lexical_environment(lenv, *(SchemeObject **)
                                           v_at(req_args, v_idx), &unbound_args);
@@ -1670,6 +1708,11 @@ SchemeObject *scheme_eval(SchemeEnv *se,
     return form;
 }
 
+SchemeObject *scheme_eval_proc(SchemeEnv *se,
+                               SchemeObject *args) {
+    return scheme_eval(se, car(args));
+}
+
 void arity_error(const char *fn_name, size_t expected, size_t found) {
     printf("Arity Error: Function: %s expected %zu arguments but received %zu.\n",
            fn_name, expected, found);
@@ -1699,17 +1742,6 @@ void type_error(const char *fn_name, const char *expected) {
     assert(0);
 }
 
-SchemeObject *scheme_length_proc (__attribute__((unused)) SchemeEnv *se,
-                                  SchemeObject *args) {
-    if (!scheme_is_list(car(args))) type_error("length", "list");
-    size_t length = scheme_length(car(args));
-    SchemeObject *length_obj = (SchemeObject *) malloc(sizeof(SchemeObject));
-    length_obj->_type = SCHEME_NUMBER;
-    length_obj->_data._number._value = bn_make(8);
-    bn_set(length_obj->_data._number._value, length);
-    return length_obj;
-}
-
 SchemeObject *scheme_not_proc (__attribute__((unused)) SchemeEnv *se,
                                SchemeObject *obj) {
     SchemeObject *punned = scheme_pun_object_proc(car(obj));
@@ -1731,6 +1763,7 @@ Bignum *scheme_minus(SchemeObject *args) {
 SchemeObject *scheme_apply_proc (SchemeEnv *se,
                                  SchemeObject *args) {
     SchemeObject *obj_fn = car(args);
+    if (obj_fn == NULL) return NULL;
     SchemeObject *list = cadr(args);
     return scheme_apply(se, obj_fn, list);
 }
@@ -1786,21 +1819,61 @@ SchemeObject *scheme_cons (SchemeObject *head,
     return consed;
 }
 
-SchemeObject *scheme_is_null (SchemeObject *o) {
+SchemeObject *scheme_cons_proc (__attribute__((unused)) SchemeEnv *se,
+                                SchemeObject *args) {
+    return scheme_cons(car(args), cadr(args));
+}
+
+SchemeObject *scheme_is_type (SchemeObject *o, int type) {
     SchemeObject *result = (SchemeObject *) malloc(sizeof(SchemeObject));
     result->_type = SCHEME_BOOLEAN;
-    result->_data._boolean._value = o->_type == SCHEME_EMPTY_LIST;
+    result->_data._boolean._value = o->_type == type;
     return result;
 }
 
 SchemeObject *scheme_is_null_proc (__attribute__((unused)) SchemeEnv *se,
                                    SchemeObject *args) {
-    return scheme_is_null(car(args));
+    return scheme_is_type(car(args), SCHEME_EMPTY_LIST);
 }
 
-SchemeObject *scheme_cons_proc (__attribute__((unused)) SchemeEnv *se,
-                                SchemeObject *args) {
-    return scheme_cons(car(args), cadr(args));
+SchemeObject *scheme_is_boolean_proc (__attribute__((unused)) SchemeEnv *se,
+                                   SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_BOOLEAN);
+}
+
+SchemeObject *scheme_is_number_proc (__attribute__((unused)) SchemeEnv *se,
+                                   SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_NUMBER);
+}
+
+SchemeObject *scheme_is_symbol_proc (__attribute__((unused)) SchemeEnv *se,
+                                     SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_SYMBOL);
+}
+
+SchemeObject *scheme_is_string_proc (__attribute__((unused)) SchemeEnv *se,
+                                     SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_STRING);
+}
+
+SchemeObject *scheme_is_pair_proc (__attribute__((unused)) SchemeEnv *se,
+                                     SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_PAIR);
+}
+
+SchemeObject *scheme_is_procedure_proc (__attribute__((unused)) SchemeEnv *se,
+                                        SchemeObject *args) {
+    SchemeObject *result = (SchemeObject *) malloc(sizeof(SchemeObject));
+    result->_type = SCHEME_BOOLEAN;
+    result->_data._boolean._value =
+        car(args)->_type == SCHEME_PRIMITIVE_PROCEDURE ||
+        car(args)->_type == SCHEME_COMPOUND_PROCEDURE;
+    return result;
+}
+
+SchemeObject *scheme_is_vector_proc (__attribute__((unused)) SchemeEnv *se,
+                                        SchemeObject *args) {
+    return scheme_is_type(car(args), SCHEME_VECTOR);
 }
 
 void add_primitives_to_symbol_table(Map *symbol_table) {
@@ -1820,17 +1893,59 @@ void add_primitives_to_symbol_table(Map *symbol_table) {
 
     new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
     new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_boolean_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("boolean?");
+    m_insert(symbol_table, "boolean?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_number_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("number?");
+    m_insert(symbol_table, "number?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_symbol_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("symbol?");
+    m_insert(symbol_table, "symbol?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_string_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("string?");
+    m_insert(symbol_table, "string?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_pair_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("pair?");
+    m_insert(symbol_table, "pair?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_procedure_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("procedure?");
+    m_insert(symbol_table, "procedure?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_is_vector_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("vector?");
+    m_insert(symbol_table, "vector?", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
     new_symbol->_data._primitive_procedure._fn = scheme_is_null_proc;
     new_symbol->_data._primitive_procedure._n_args_expected = 1;
     new_symbol->_data._primitive_procedure._proc_name = strdup("null?");
     m_insert(symbol_table, "null?", &new_symbol);
-
-    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
-    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
-    new_symbol->_data._primitive_procedure._fn = scheme_length_proc;
-    new_symbol->_data._primitive_procedure._n_args_expected = 1;
-    new_symbol->_data._primitive_procedure._proc_name = strdup("length");
-    m_insert(symbol_table, "length", &new_symbol);
 
     new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
     new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
@@ -1866,6 +1981,13 @@ void add_primitives_to_symbol_table(Map *symbol_table) {
     new_symbol->_data._primitive_procedure._n_args_expected = 1;
     new_symbol->_data._primitive_procedure._proc_name = strdup("cdr");
     m_insert(symbol_table, "cdr", &new_symbol);
+
+    new_symbol = (SchemeObject *) malloc(sizeof(SchemeObject));
+    new_symbol->_type = SCHEME_PRIMITIVE_PROCEDURE;
+    new_symbol->_data._primitive_procedure._fn = scheme_eval_proc;
+    new_symbol->_data._primitive_procedure._n_args_expected = 1;
+    new_symbol->_data._primitive_procedure._proc_name = strdup("eval");
+    m_insert(symbol_table, "eval", &new_symbol);
 }
 
 #endif

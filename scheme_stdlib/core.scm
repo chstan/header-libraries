@@ -19,6 +19,26 @@
             (cons (car l) (filter f (cdr l)))
             (filter f (cdr l))))))
 
+(define id
+  (lambda (x) x))
+
+(define length
+  (lambda (l)
+    (cond ((null? l) 0)
+          (else (+ 1 (length (cdr l)))))))
+
+(define append-two-lists
+  (lambda (ss ts)
+    (cond ((null? ss) ts)
+          (else
+           (cons (car ss)
+                 (append-two-lists (cdr ss) ts))))))
+
+(define curry
+  (lambda (f arg1)
+    (lambda (#!rest args)
+      (apply f (cons arg1 args)))))
+
 (define caar
   (lambda (x) (car (car x))))
 (define cadr

@@ -5,6 +5,8 @@
 #include <assert.h>
 #include <stdlib.h>
 
+#include "cvector.h"
+
 #define DEFAULT_BUCKET_COUNT 32
 #define MIN_BUCKET_COUNT 8
 #define REBALANCE_LOAD_FACTOR 2
@@ -225,6 +227,16 @@ void m_free(Map *m) {
 
     free(m->_buckets);
     free(m);
+}
+
+void map_union(char *k, void *d, void *aux) {
+    Map *to = (Map *) aux;
+    m_insert(to, k, d);
+}
+
+void map_to_vector(__attribute__((unused)) char *k, void *d, void *aux) {
+    Vector *to = (Vector *) aux;
+    v_push_back(to, d);
 }
 
 #endif

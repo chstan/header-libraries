@@ -878,7 +878,7 @@ SchemeObject *scheme_let_special_form(SchemeEnv *se,
     while (inits->_type != SCHEME_EMPTY_LIST) {
         SchemeObject *pair = car(inits);
         inits = cdr(inits);
-        SchemeObject *reffed = car(cdr(pair));
+        SchemeObject *reffed = scheme_eval(se, car(cdr(pair)));
         m_insert(lenv, car(pair)->_data._symbol._value, &reffed);
     }
 

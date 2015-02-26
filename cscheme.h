@@ -858,6 +858,42 @@ SchemeObject *scheme_lambda_special_form(SchemeEnv *se,
     return new_proc;
 }
 
+void scheme_push_lexical_environment(SchemeEnv *se, Map *lenv) {
+    v_push_back(se->_lexical_environment_stack, &lenv);
+}
+
+void scheme_pop_lexical_environment(SchemeEnv *se) {
+    assert(v_size(se->_lexical_environment_stack) >= 1);
+    v_remove(se->_lexical_environment_stack,
+             v_size(se->_lexical_environment_stack) - 1);
+}
+
+SchemeObject *scheme_let_special_form(SchemeEnv *se,
+                                      SchemeObject *args) {
+    size_t n_args = scheme_length(args);
+    assert(n_args >= 2);
+
+    SchemeObject *inits = car(args);
+    Map *lenv = m_make(sizeof(SchemeObject *));
+    while (inits->_type != SCHEME_EMPTY_LIST) {
+        SchemeObject *pair = car(inits);
+        inits = cdr(inits);
+        SchemeObject *reffed = car(cdr(pair));
+        m_insert(lenv, car(pair)->_data._symbol._value, &reffed);
+    }
+
+    scheme_push_lexical_environment(se, lenv);
+    SchemeObject *exps = cdr(args);
+    SchemeObject *evaled = NULL;
+    while (exps->_type != SCHEME_EMPTY_LIST) {
+        evaled = scheme_eval(se, car(exps));
+        exps = cdr(exps);
+    }
+    scheme_pop_lexical_environment(se);
+    m_free(lenv);
+    return evaled;
+}
+
 SchemeObject *scheme_if_special_form(SchemeEnv *se,
                                      SchemeObject *args) {
     size_t n_args = scheme_length(args);
@@ -900,8 +936,10 @@ void initialize_special_form_table(Map *special_form_table) {
     procedure = scheme_lambda_special_form;
     m_insert(special_form_table, "lambda", &procedure);
 
-    procedure = NULL;
+    procedure = scheme_let_special_form;
     m_insert(special_form_table, "let", &procedure);
+
+    procedure = NULL;
     m_insert(special_form_table, "begin", &procedure);
 
     procedure = scheme_quote_special_form;
@@ -909,16 +947,6 @@ void initialize_special_form_table(Map *special_form_table) {
 
     procedure = NULL;
     m_insert(special_form_table, "quasiquote", &procedure);
-}
-
-void scheme_push_lexical_environment(SchemeEnv *se, Map *lenv) {
-    v_push_back(se->_lexical_environment_stack, &lenv);
-}
-
-void scheme_pop_lexical_environment(SchemeEnv *se) {
-    assert(v_size(se->_lexical_environment_stack) >= 1);
-    v_remove(se->_lexical_environment_stack,
-             v_size(se->_lexical_environment_stack) - 1);
 }
 
 void scheme_env_free(SchemeEnv *se);

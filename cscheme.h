@@ -15,6 +15,12 @@
 #include "clex.h"
 
 typedef enum {
+    SCHEME_READY,
+    SCHEME_OKAY,
+    SCHEME_ENCOUNTERED_ERROR
+} InterpreterState;
+
+typedef enum {
     SCHEME_EMPTY_LIST,          // done
     SCHEME_BOOLEAN,             // done
     SCHEME_NUMBER,              // done
@@ -75,6 +81,8 @@ typedef struct SchemeObject {
     } _data;
 } SchemeObject;
 
+void scheme_fails(struct SchemeEnv *se, const char *msg);
+
 void arity_check(SchemeObject *f, SchemeObject *args);
 
 
@@ -92,6 +100,10 @@ SchemeObject *car(SchemeObject *o) {
 
 SchemeObject *scheme_car_proc(__attribute__((unused)) struct SchemeEnv *se,
                               SchemeObject *o) {
+    if (o->_type != SCHEME_PAIR || car(o)->_type != SCHEME_PAIR) {
+        scheme_fails(se, "That's no list...");
+        return NULL;
+    }
     return car(car(o));
 }
 
@@ -101,6 +113,10 @@ SchemeObject *cdr(SchemeObject *o) {
 
 SchemeObject *scheme_cdr_proc(__attribute__((unused)) struct SchemeEnv *se,
                               SchemeObject *o) {
+    if (o->_type != SCHEME_PAIR || car(o)->_type != SCHEME_PAIR) {
+        scheme_fails(se, "That's no list...");
+        return NULL;
+    }
     return cdr(car(o));
 }
 
@@ -276,11 +292,11 @@ void scheme_object_fprint(FILE *f, SchemeObject *o) {
         break;
     }
     case SCHEME_PRIMITIVE_PROCEDURE:
-        fprintf(f, "#[primitive-procedure %s]\n",
+        fprintf(f, "#[primitive-procedure %s]",
                 o->_data._primitive_procedure._proc_name);
         break;
     case SCHEME_COMPOUND_PROCEDURE:
-        fprintf(f, "#[compound-procedure %s]\n",
+        fprintf(f, "#[compound-procedure %s]",
                 o->_data._compound_procedure._proc_name);
         break;
     }
@@ -320,10 +336,8 @@ void scheme_object_free(SchemeObject *o) {
         break;
     }
     case SCHEME_PRIMITIVE_PROCEDURE:
-        assert(0);
         break;
     case SCHEME_COMPOUND_PROCEDURE:
-        assert(0);
         break;
     }
 }
@@ -340,6 +354,7 @@ bool scheme_significant_token(const void *p, __attribute__((unused)) const void 
 }
 
 typedef struct SchemeEnv {
+    InterpreterState _state;
     LexerEnv *_lexer;
     ParserEnv *_parser;
     Map *_symbol_table;
@@ -347,6 +362,20 @@ typedef struct SchemeEnv {
     Vector *_lexical_environment_stack;
     size_t _n_lambdas;
 } SchemeEnv;
+
+void scheme_fails(SchemeEnv *se, const char *msg) {
+    printf("%s", msg);
+    fflush(stdout);
+    se->_state = SCHEME_ENCOUNTERED_ERROR;
+}
+
+void scheme_clear_state(SchemeEnv *se) {
+    se->_state = SCHEME_OKAY;
+}
+
+bool scheme_state_okay(SchemeEnv *se) {
+    return se->_state == SCHEME_OKAY;
+}
 
 SchemeObject *scheme_simple_list_combines_internal(void **data, size_t n) {
     if (n == 0) {
@@ -738,11 +767,16 @@ SchemeObject *scheme_cond_evaluate_clause(SchemeEnv *se,
                                           SchemeObject *clause,
                                           bool *truthy, bool allow_else) {
     size_t length_clause = scheme_length(clause);
+    if (length_clause < 2) {
+        scheme_fails(se, "Encountered bad cond clause. Insufficient expressions.");
+        return NULL;
+    }
+
     if (car(clause)->_type == SCHEME_SYMBOL &&
         strcmp(car(clause)->_data._symbol._value, "else") == 0) {
         if (!allow_else) {
-            printf("else encountered out of tail position in a cond special form.\n");
-            assert(0);
+            scheme_fails(se, "else encountered out of tail position in a cond form.");
+            return NULL;
         }
         *truthy = true;
     } else {
@@ -753,9 +787,12 @@ SchemeObject *scheme_cond_evaluate_clause(SchemeEnv *se,
     }
     if (*truthy == false) return NULL;
 
-    assert(length_clause >= 2);
     SchemeObject *exprs = cdr(clause);
     while (true) {
+        if (exprs->_type != SCHEME_PAIR && exprs->_type != SCHEME_EMPTY_LIST) {
+            scheme_fails(se, "That's no list...");
+            return NULL;
+        }
         SchemeObject *e_expr = scheme_eval(se, car(exprs));
         exprs = cdr(exprs);
         if (exprs->_type == SCHEME_EMPTY_LIST) return e_expr;
@@ -784,7 +821,8 @@ char *scheme_generate_lambda_name(SchemeEnv *se) {
     return strdup(buffer);
 }
 
-void scheme_lambda_compile_parameters(SchemeObject *proc,
+void scheme_lambda_compile_parameters(SchemeEnv *se,
+                                      SchemeObject *proc,
                                       SchemeObject *args) {
     proc->_data._compound_procedure._req_args = v_make(sizeof(SchemeObject *));
     proc->_data._compound_procedure._opt_args = v_make(sizeof(SchemeObject *));
@@ -802,7 +840,11 @@ void scheme_lambda_compile_parameters(SchemeObject *proc,
         } else if (ec->_type == SCHEME_SYMBOL &&
                    strcmp(ec->_data._symbol._value, "#!rest") == 0) {
             args = cdr(args);
-            assert(scheme_length(args) == 1);
+
+            if (scheme_length(args) != 1) {
+                scheme_fails(se, "Incorrect number of symbols following #!rest signifier.");
+                return;
+            }
             proc->_data._compound_procedure._rest = car(args);
             return;
         } else {
@@ -843,13 +885,18 @@ Vector *scheme_build_closing_environment(SchemeEnv *se) {
 
 SchemeObject *scheme_lambda_special_form(SchemeEnv *se,
                                          SchemeObject *args) {
+    if (!scheme_state_okay(se)) return NULL;
     size_t n_args = scheme_length(args);
-    assert(n_args >= 2);
+    if (n_args < 2) {
+        scheme_fails(se, "Insufficient expressions in lambda form.");
+        return NULL;
+    }
 
     SchemeObject *new_proc = (SchemeObject *) malloc(sizeof(SchemeObject));
 
     new_proc->_type = SCHEME_COMPOUND_PROCEDURE;
-    scheme_lambda_compile_parameters(new_proc, car(args));
+    scheme_lambda_compile_parameters(se, new_proc, car(args));
+    if (!scheme_state_okay(se)) return NULL;
     new_proc->_data._compound_procedure._body = cdr(args);
     new_proc->_data._compound_procedure._n_args_expected = 0;
     new_proc->_data._compound_procedure._env = scheme_build_closing_environment(se);
@@ -871,12 +918,24 @@ void scheme_pop_lexical_environment(SchemeEnv *se) {
 SchemeObject *scheme_let_special_form(SchemeEnv *se,
                                       SchemeObject *args) {
     size_t n_args = scheme_length(args);
-    assert(n_args >= 2);
+    if (n_args < 2) {
+        scheme_fails(se, "Insufficient expressions in let form.");
+        return NULL;
+    }
 
     SchemeObject *inits = car(args);
     Map *lenv = m_make(sizeof(SchemeObject *));
+
     while (inits->_type != SCHEME_EMPTY_LIST) {
+        if (inits->_type != SCHEME_PAIR && inits->_type != SCHEME_EMPTY_LIST) {
+            scheme_fails(se, "That's no list...");
+            return NULL;
+        }
         SchemeObject *pair = car(inits);
+        if (pair->_type != SCHEME_PAIR || cdr(pair)->_type != SCHEME_PAIR) {
+            scheme_fails(se, "Invalid binding expression in let.");
+            return NULL;
+        }
         inits = cdr(inits);
         SchemeObject *reffed = scheme_eval(se, car(cdr(pair)));
         m_insert(lenv, car(pair)->_data._symbol._value, &reffed);
@@ -909,7 +968,16 @@ SchemeObject *scheme_if_special_form(SchemeEnv *se,
 SchemeObject *scheme_define_special_form(SchemeEnv *se,
                                          SchemeObject *args) {
     size_t n_args = scheme_length(args);
-    assert(n_args == 2); // not quite true... good enough for now
+    if (n_args != 2) {
+        scheme_fails(se, "I only support top level defines i.e. (define sym expr), at the moment.");
+        return NULL;
+    }
+    assert(n_args == 2);
+
+    if (car(args)->_type != SCHEME_SYMBOL) {
+        scheme_fails(se, "Define needs a symbol as its first expression!");
+        return 0;
+    }
     assert(car(args)->_type == SCHEME_SYMBOL);
     SchemeObject *value = scheme_eval(se, cadr(args));
 
@@ -1508,6 +1576,7 @@ SchemeEnv *scheme_env_make(const char *stdlib_location) {
             return NULL;
         }
         for (size_t f_i = 0; f_i < v_size(library_forms); f_i++) {
+            scheme_clear_state(se);
             SchemeObject *form = *(SchemeObject **) v_at(library_forms, f_i);
             scheme_eval(se, form);
         }
@@ -1695,6 +1764,7 @@ SchemeObject *scheme_eval(SchemeEnv *se,
         // lookup symbol in the environment
         SchemeObject *resolution = scheme_symbol_lookup(se, form);
         if (resolution == NULL) {
+            se->_state = SCHEME_ENCOUNTERED_ERROR;
             printf("Unable to resolve symbol: %s in this context.",
                    form->_data._symbol._value);
         }

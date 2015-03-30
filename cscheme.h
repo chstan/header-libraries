@@ -1854,7 +1854,12 @@ SchemeObject *scheme_not_proc (__attribute__((unused)) SchemeEnv *se,
 }
 
 Bignum *scheme_minus(SchemeObject *args) {
-    assert(args->_type == SCHEME_PAIR);
+    assert(args->_type == SCHEME_PAIR || args->_type == SCHEME_EMPTY_LIST);
+    if (args->_type == SCHEME_EMPTY_LIST) {
+        Bignum *num = bn_make(0);
+        bn_set(num, 0);
+        return num;
+    }
     Bignum *num = bn_deepcopy(car(args)->_data._number._value);
     args = cdr(args);
     while (args->_type != SCHEME_EMPTY_LIST) {

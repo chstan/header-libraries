@@ -14,6 +14,8 @@
 #include "cbignum.h"
 #include "clex.h"
 
+#define MAXIMUM_STACK_DEPTH 100
+
 typedef enum {
     SCHEME_READY,
     SCHEME_OKAY,
@@ -1759,6 +1761,10 @@ SchemeObject *scheme_eval_special_form(__attribute__((unused)) SchemeEnv *se,
 
 SchemeObject *scheme_eval(SchemeEnv *se,
                           SchemeObject *form) {
+    if (v_size(se->_lexical_environment_stack) > MAXIMUM_STACK_DEPTH) {
+        scheme_fails(se, "Stack too deep.");
+        return NULL;
+    }
     if (scheme_self_evaluating(form)) return form;
     if (form->_type == SCHEME_SYMBOL) {
         // lookup symbol in the environment
